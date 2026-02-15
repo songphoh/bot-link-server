@@ -1,7 +1,11 @@
-import { kv } from '@vercel/kv';
+import Redis from 'ioredis';
+
+// Connect to Redis using the Environment Variable
+// If running locally or if REDIS_URL is not set, this might fail, so ensure Env Var is set in Vercel
+const client = new Redis(process.env.REDIS_URL || 'redis://localhost:6379');
 
 export default async function handler(request, response) {
-    // Allow simple CORS just in case
+    // Allow simple CORS
     response.setHeader('Access-Control-Allow-Origin', '*');
     response.setHeader('Access-Control-Allow-Methods', 'GET, POST');
 
@@ -9,7 +13,6 @@ export default async function handler(request, response) {
 
     try {
         if (method === 'POST') {
-            // Try to get command from body (JSON) or query string
             let command = null;
             if (request.body && request.body.command) command = request.body.command;
             else if (request.query && request.query.command) command = request.query.command;
@@ -18,28 +21,26 @@ export default async function handler(request, response) {
                 return response.status(400).json({ error: 'Missing command' });
             }
 
-            // Save command with timestamp (Lazy Expiration)
-            // We store it as a JSON object inside Redis (KV)
-            await kv.set('bot_command', { cmd: command, time: Date.now() });
+            const data = JSON.stringify({ cmd: command, time: Date.now() });
+            await client.set('bot_command', data);
 
             return response.status(200).json({ status: 'OK', saved: command });
         }
 
         else if (method === 'GET') {
-            const data = await kv.get('bot_command');
+            const result = await client.get('bot_command');
 
-            // 1. If no data found, return WAIT
-            if (!data) {
+            if (!result) {
                 return response.status(200).send('WAIT');
             }
 
-            // 2. Check Expiration (30 seconds = 30000 ms)
-            // Since Vercel is stateless, we check time on retrieval
+            const data = JSON.parse(result);
+
+            // Check Expiration (30 seconds)
             if (Date.now() - data.time > 30000) {
                 return response.status(200).send('WAIT');
             }
 
-            // 3. Return the active command
             return response.status(200).send(data.cmd);
         }
 
